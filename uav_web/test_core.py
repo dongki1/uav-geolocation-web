@@ -23,7 +23,7 @@ class CoreTests(unittest.TestCase):
         p=project(self.state,[1920,1080],DEFAULT_CAMERA)
         self.assertAlmostEqual(p['north_m'],0)
     def test_safe_zip_and_hash(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as td:
+        with tempfile.TemporaryDirectory() as td:
             p=Path(td);buf=io.BytesIO();Image.new('RGB',(32,24)).save(buf,format='JPEG');raw=buf.getvalue();camera=dict(DEFAULT_CAMERA,width=32,height=24)
             for bad in [False,True]:
                 with zipfile.ZipFile(p/'a.zip','w') as z:

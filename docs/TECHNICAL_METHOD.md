@@ -1,181 +1,225 @@
-# UAV 영상 기반 사람 위치추정 시스템의 수학적 모델과 구현 검증
+# UAV 영상 기반 사람 위치추정의 수학적 모델과 코드 검증
 
-## 1. 목적과 구현 범위
+## 1. 구현 범위
 
-이 프로그램은 UAV 영상과 촬영 시점 메타데이터를 입력받아 영상에서 사람을 검출하고, 각 사람의 영상 픽셀을 지상 위치로 투영한 뒤 전체 관측 분포를 웹 지도와 GeoJSON으로 출력한다. 기하 모델은 Kim et al. (2025)의 좌표계 변환, 핀홀 카메라 모델 및 광선-지면 교차식을 단일 프레임에 적용한다.
+이 프로그램은 UAV 영상에서 사람을 검출하고, 검출 픽셀과 촬영 시점의 UAV·2축 짐벌 메타데이터를 이용해 지상 위치를 계산한다. 기하 모델은 Kim et al. (2025)의 식 (1)~(3), (11)~(14), (18)을 단일 프레임에 적용한다.
 
-논문 전체를 재현하는 구현은 아니다. 논문의 능동 짐벌 제어, CSRT 추적, 동일 표적의 시간 연계, unicycle 운동 모델, EKF와 UKF는 구현하지 않는다. 따라서 출력점은 각 영상에서 독립적으로 계산한 **관측 위치**이며, 동일 인물의 궤적이나 필터링된 위치가 아니다.
-
-## 2. 시스템 처리 흐름
+논문의 능동 짐벌 제어, CSRT 추적, 동일 표적의 시간 연계, unicycle 운동 모델, EKF와 UKF는 구현하지 않는다. 출력은 프레임별 **관측 위치**이며 필터링된 표적 궤적이나 고유 인원 수가 아니다.
 
 ```mermaid
 flowchart LR
-    A[ZIP 입력] --> B[메타데이터·이미지 검증]
-    B --> C[1024 px 타일별 사람 검출]
-    C --> D[중복 박스 억제]
-    D --> E[박스 하단 중앙 픽셀]
-    E --> F[카메라 광선 생성]
-    F --> G[2축 짐벌·기체 자세 회전]
-    G --> H[평탄 지면과 교차]
-    H --> I[WGS84 위·경도 변환]
-    I --> J[사진 검토·지도·GeoJSON]
+    A[ZIP 영상·메타데이터] --> B[YOLO 사람 검출]
+    B --> C[박스 하단 중앙 픽셀]
+    C --> D[핀홀 카메라 광선]
+    D --> E[2축 짐벌 회전]
+    E --> F[기체 자세 회전]
+    F --> G[평탄 지면 교차]
+    G --> H[WGS84 위·경도]
+    H --> I[웹 지도·GeoJSON]
 ```
 
-코드 대응은 다음과 같다.
+## 2. 좌표계와 기호
 
-| 처리 단계 | 구현 위치 | 결과 |
+논문은 이륙점을 원점으로 하는 NED 관성좌표계 $F_I$, 이와 평행하게 UAV를 따라 이동하는 vehicle-carried frame $F_V$, 기체좌표계 $F_B$, 카메라와 결합된 짐벌좌표계 $F_G$를 사용한다. NED 벡터의 성분은 북쪽 $N$, 동쪽 $E$, 아래쪽 $D$이다. 카메라/짐벌 좌표축은 전방 $x$, 우측 $y$, 하방 $z$의 FRD로 둔다.
+
+| 논문 기호 | 코드 항목 | 단위 |
 |---|---|---|
-| ZIP 및 영상 검증 | `uav_web/core.py: import_zip` | 프레임별 영상·상태 정보 |
-| 사람 검출 | `uav_web/detector.py: Detector.detect` | 바운딩 박스와 신뢰도 |
-| 위치 투영 | `uav_web/core.py: project` | 북·동 변위와 위·경도 |
-| 검출점 수정·재계산 | `uav_web/server.py: /edit` | 검토된 관측점 |
-| 웹 표시 및 내보내기 | `uav_web/index.html`, `geojson` | 지도, JSON, GeoJSON |
+| $\phi_0,\lambda_0$ | `latitude`, `longitude` | degree |
+| $h$ | `altitude_agl` | metre |
+| $\phi,\theta,\psi$ | `roll`, `pitch`, `yaw` | radian |
+| $\lambda,\nu$ | `gimbal_pitch`, `gimbal_yaw` | degree → radian |
+| $f_x,f_y,c_x,c_y$ | camera 설정 | pixel |
+| $u,v$ | `pixel_4k` | pixel |
 
-## 3. 좌표계와 입력 단위
+짐벌은 pan-yaw와 tilt-pitch의 2축이며 roll 축은 사용하지 않는다.
 
-항법 좌표계는 NED를 사용한다. 벡터의 세 성분은 각각 북쪽 (N), 동쪽 (E), 아래쪽 (D)이다. 카메라 광선도 기체 FRD와 축이 일치한다고 가정하여 첫 성분은 전방, 둘째는 우측, 셋째는 하방이다.
+## 3. 사람 검출점
 
-| 기호 | 의미 | 코드 입력 단위 |
-|---|---|---|
-| \(\phi_0,\lambda_0\) | UAV 위도·경도 | degree |
-| \(h\) | UAV의 지면 기준 높이 | metre, AGL |
-| \(\phi,\theta,\psi\) | 기체 roll·pitch·yaw | radian |
-| \(\theta_g,\psi_g\) | 2축 짐벌 pitch·yaw | degree, 내부에서 radian 변환 |
-| \(f_x,f_y,c_x,c_y\) | 카메라 내부 파라미터 | pixel |
-| \(u,v\) | 사람의 지면 접점 픽셀 | pixel |
+YOLO11n은 영상을 1024×1024 pixel 타일로 처리한다. 타일 간격은 768 pixel이므로 256 pixel이 겹치며, COCO `person` 클래스만 검출한다. 중복 박스는 신뢰도 순 IoU 0.45 NMS로 제거한다.
 
-기본 카메라 값은 3840×2160 영상에 대해 \(f_x=f_y=2248\), \(c_x=1920\), \(c_y=1080\)이다. 이 값은 공칭값이므로 실제 카메라 보정 결과로 교체해야 정량적 정확도를 주장할 수 있다.
+검출 박스가 $(x_{min},y_{min},x_{max},y_{max})$일 때 사람과 지면의 접점은
 
-## 4. 사람 검출과 대표 픽셀
-
-원본 4K 영상을 1024×1024 타일로 나누고 768 pixel 간격으로 이동하므로 인접 타일은 256 pixel 겹친다. Ultralytics YOLO11n의 COCO `person` 클래스만 검출하며, 기본 신뢰도 임계값은 0.25이다. 타일 중복 검출은 신뢰도 내림차순으로 정렬한 뒤 IoU 0.45 미만인 박스만 유지한다.
-
-검출 박스 \((x_{min},y_{min},x_{max},y_{max})\)에서 지면 접점은
-
-\[
+$$
 u=\frac{x_{min}+x_{max}}{2},\qquad v=y_{max}
-\]
+\tag{A1}
+$$
 
-로 둔다. 이는 사람의 발이 박스 하단 중앙에 있다는 근사이다. 앉은 사람, 가려진 사람, 그림자나 부정확한 박스에서는 편향이 생기므로 웹 화면에서 접점 픽셀을 수정할 수 있다.
+로 근사한다. 앉거나 가려진 사람은 웹 화면에서 접점을 직접 수정해야 한다.
 
-## 5. 핀홀 카메라 광선
+## 4. 논문 식 (1): 기체 자세 회전
 
-왜곡이 제거된 핀홀 카메라를 가정하면 픽셀의 정규화 좌표는
+기체좌표계의 단위벡터를 $F_V$에서 표현하는 3-2-1 Euler 회전은
 
-\[
-x_n=\frac{u-c_x}{f_x},\qquad y_n=\frac{v-c_y}{f_y}
-\]
+$$
+\mathbf R_B^V(\phi,\theta,\psi)
+=\mathbf R_z(\psi)\mathbf R_y(\theta)\mathbf R_x(\phi)
+\tag{1}
+$$
 
-이고 카메라 좌표계의 비정규화 광선은
+이다. 코드의 `rotation(yaw,2) @ rotation(pitch,1) @ rotation(roll,0)`과 일치한다.
 
-\[
-\mathbf r_G=\begin{bmatrix}1 & x_n & y_n\end{bmatrix}^{T}
-\]
+## 5. 논문 식 (2): 2축 짐벌 회전
 
-이다. 광선을 단위벡터로 정규화하지 않아도 이후 계산에서 성분비만 사용하므로 교차점은 동일하다.
+논문에서 pan은 $\nu$, tilt는 $\lambda$이다. 짐벌좌표계의 단위벡터를 기체좌표계에서 표현하는 회전은
 
-## 6. 2축 짐벌과 기체 자세 변환
+$$
+\mathbf R_G^B(\nu,\lambda)
+=\mathbf R_z(\nu)\mathbf R_y(\lambda)
+\tag{2}
+$$
 
-기체의 3-2-1 Euler 회전은
+이다. 코드에서는 $\nu=\texttt{gimbal\_yaw}$, $\lambda=\texttt{gimbal\_pitch}$로 대응한다.
 
-\[
-\mathbf R_B^N=\mathbf R_z(\psi)\mathbf R_y(\theta)\mathbf R_x(\phi)
-\]
+## 6. 논문 식 (3): 결합 회전
 
-이다. 2축 짐벌에는 roll 축이 없으므로 짐벌에서 기체로의 회전은
+논문의 기체와 짐벌 회전을 결합하면
 
-\[
-\mathbf R_G^B=\mathbf R_z(\psi_g)\mathbf R_y(\theta_g)
-\]
+$$
+\mathbf R_G^V
+=\mathbf R_B^V(\phi,\theta,\psi)\mathbf R_G^B(\nu,\lambda)
+\tag{3}
+$$
 
-이다. 따라서 NED 좌표계에서 표적을 향하는 광선은
+이다. 따라서 짐벌 $x$축 광축은
 
-\[
-\mathbf d_N=
+$$
+\hat{\mathbf i}_g^I
+=\mathbf R_G^V
+\begin{bmatrix}1\\0\\0\end{bmatrix}.
+\tag{4}
+$$
+
+## 7. 논문 식 (18)과 임의 픽셀 광선
+
+논문 식 (18)의 핀홀 측정 관계를 코드의 픽셀 좌표로 쓰면
+
+$$
+s
+\begin{bmatrix}
+1\\ \Delta x_{pix}/f_x\\ \Delta y_{pix}/f_y
+\end{bmatrix}
+=\mathbf C_I^G
+\begin{bmatrix}
+x_t-x_b\\y_t-y_b\\h
+\end{bmatrix}
++\boldsymbol\mu_k.
+\tag{18′}
+$$
+
+$s$는 카메라 광축 방향 깊이이며 $\boldsymbol\mu_k$는 픽셀 잡음이다. 현재 코드는 필터의 잡음항을 사용하지 않고 검출 픽셀에서 다음 광선을 만든다.
+
+$$
+\mathbf r_G=
+\begin{bmatrix}
+1\\(u-c_x)/f_x\\(v-c_y)/f_y
+\end{bmatrix}.
+\tag{A2}
+$$
+
+NED 좌표계에서 광선은
+
+$$
+\mathbf d=
 \mathbf R_z(\psi)\mathbf R_y(\theta)\mathbf R_x(\phi)
-\mathbf R_z(\psi_g)\mathbf R_y(\theta_g)
+\mathbf R_z(\nu)\mathbf R_y(\lambda)
 \mathbf r_G
-=\begin{bmatrix}d_N&d_E&d_D\end{bmatrix}^{T}.
-\]
+=\begin{bmatrix}d_N\\d_E\\d_D\end{bmatrix}.
+\tag{A3}
+$$
 
-행렬은 오른쪽 벡터부터 적용된다. 즉 카메라 광선에 짐벌 pitch, 짐벌 yaw, 기체 roll, pitch, yaw가 차례로 적용된다. 이 순서는 `core.py`의 행렬 곱과 일치한다. 입력 메타데이터의 각도가 이 좌표계와 부호 규약을 따른다는 전제가 필요하다.
+행렬은 오른쪽부터 적용된다. 광선의 공통 스케일은 다음 단계에서 상쇄되므로 단위벡터 정규화는 필요하지 않다.
 
-## 7. 광선과 지면의 교차
+## 8. 논문 식 (11)~(14): 광선과 지면의 교차
 
-UAV를 원점으로 놓고 지면이 수평이며 UAV 아래에서 \(D=h\)라고 가정한다. 광선 위 점은
+논문 식 (11)은 UAV 위치 $\mathbf p_B$에서 광축 방향으로 진행하는 직선이다.
 
-\[
-\mathbf p(\rho)=\rho\mathbf d_N
-\]
+$$
+\mathbf p_T=\mathbf p_B+\rho\hat{\mathbf i}_g.
+\tag{11}
+$$
 
-이므로 하방 성분에서
+NED에서 UAV와 지상 표적은 $\mathbf p_B=[x_b,y_b,-h]^T$, $\mathbf p_T=[x_t,y_t,0]^T$이므로
 
-\[
-\rho=\frac{h}{d_D}
-\]
+$$
+\rho\hat{\mathbf i}_g
+=\mathbf p_T-\mathbf p_B
+=\begin{bmatrix}x_t-x_b\\y_t-y_b\\h\end{bmatrix}.
+\tag{12}
+$$
 
-를 얻는다. 지상점의 국소 변위는
+하방 단위벡터 $\hat{\mathbf k}^{I}$와 내적하면
 
-\[
+$$
+\rho=\frac{h}{\hat{\mathbf i}_g\cdot\hat{\mathbf k}^{I}}
+\tag{13}
+$$
+
+이고 지상점은
+
+$$
+\mathbf p_T
+=\mathbf p_B+
+\frac{h}{\hat{\mathbf i}_g\cdot\hat{\mathbf k}^{I}}
+\hat{\mathbf i}_g.
+\tag{14}
+$$
+
+코드의 비정규화 광선 $\mathbf d$를 대입하면
+
+$$
 \Delta N=h\frac{d_N}{d_D},\qquad
 \Delta E=h\frac{d_E}{d_D}.
-\]
+\tag{A4}
+$$
 
-코드는 \(d_D\le 10^{-6}\)인 경우 광선이 전방 지면과 유효하게 교차하지 않는 것으로 처리한다. 현재 지형고도 모델은 없으며 모든 표적이 UAV의 AGL 기준 평면에 있다고 본다. 지면 표고차 \(\Delta h\)를 같은 수직 기준으로 얻는다면 식의 \(h\)를 \(h-\Delta h\)로 교체할 수 있다.
+`core.py`의 `d * altitude_agl / d[2]`가 이 식이다. $d_D\le10^{-6}$이면 광선이 아래쪽 지면과 유효하게 교차하지 않는 것으로 처리한다. 지형 표고차 $\Delta h$가 같은 수직 기준으로 주어지면 $h$ 대신 $H=h-\Delta h$를 사용한다. 현재 코드는 $\Delta h=0$인 평탄 지면만 지원한다.
 
-## 8. 북·동 변위의 위·경도 변환
+## 9. WGS84 위·경도 변환
 
-WGS84 장반경 \(a=6378137\,\mathrm m\), 제1이심률 제곱 \(e^2=6.6943799901413165\times10^{-3}\)을 사용한다. UAV 위도 \(\phi_0\)에서 묘유선 및 자오선 곡률반경은
+WGS84의 장반경 $a=6378137\,\mathrm m$, 이심률 제곱 $e^2=6.6943799901413165\times10^{-3}$을 사용한다. UAV 위도 $\phi_0$에서 곡률반경은
 
-\[
+$$
 R_N=\frac{a}{\sqrt{1-e^2\sin^2\phi_0}},\qquad
 R_M=\frac{a(1-e^2)}{(1-e^2\sin^2\phi_0)^{3/2}}
-\]
+\tag{A5}
+$$
 
-이고 최종 좌표는
+이고 최종 위치는
 
-\[
-\phi_t=\phi_0+\operatorname{deg}\left(\frac{\Delta N}{R_M}\right),
-\qquad
-\lambda_t=\lambda_0+\operatorname{deg}\left(\frac{\Delta E}{R_N\cos\phi_0}\right)
-\]
+$$
+\phi_t=\phi_0+\operatorname{deg}\!\left(\frac{\Delta N}{R_M}\right),\qquad
+\lambda_t=\lambda_0+\operatorname{deg}\!\left(\frac{\Delta E}{R_N\cos\phi_0}\right).
+\tag{A6}
+$$
 
-로 계산한다. 이는 짧은 거리의 국소 접평면 근사이다. 일반적인 UAV 촬영 거리에는 적합하지만 장거리 투영에는 ECEF 또는 측지선 직접해가 더 적절하다.
+이는 짧은 거리의 국소 접평면 근사이다. 논문의 평탄 지면 가정은 통상 이륙점에서 20 km 미만 운용을 전제로 한다.
 
-## 9. 입력 검증과 결과 관리
+## 10. 코드 검증 결과
 
-ZIP에는 `metadata.json`이 정확히 하나 있어야 하며 이미지 배열은 1~500장으로 제한된다. 전체 압축해제 크기, 파일 수, 이미지 크기, 경로 순회, 중복 경로, SHA-256, 영상 해상도를 검사한다. 잘못된 프레임은 오류로 남기고 나머지 프레임은 계속 처리한다.
-
-자동 검출 후 사용자는 사람 접점을 추가·이동·삭제하고 프레임을 검토 완료로 표시할 수 있다. 수정할 때마다 좌표를 다시 계산한다. 결과의 사람 수는 여러 프레임에 나타난 **검출 관측 횟수**이므로 고유 인원 수와 같지 않다. GeoJSON의 각 점에는 프레임 번호, 관측 ID, 촬영 시각, 자동/수동 출처, 검토 상태와 접점 근사 여부가 기록된다.
-
-## 10. 논문 대비 구현 검증 결과
-
-| 항목 | 판정 | 근거와 의미 |
+| 검증 항목 | 결과 | 설명 |
 |---|---|---|
-| 3-2-1 기체 회전 | 일치 | \(R_zR_yR_x\) 순서를 그대로 구현 |
-| 2축 짐벌 회전 | 일치 | roll 없이 \(R_z(\psi_g)R_y(\theta_g)\) 사용 |
-| 핀홀 광선 | 일치 | 내부 파라미터로 픽셀을 정규화 |
-| 평탄 지면 교차 | 일치 | NED 하방 성분과 AGL의 비로 교차 계산 |
-| 절대 위치 변환 | 타당 | WGS84 국소 곡률반경을 이용한 1차 근사 |
-| 표적 검출기 | 개념만 대응 | 논문 Tiny-YOLO 대신 YOLO11n 사용 |
-| 영상 추적 | 미구현 | 프레임 사이 동일 표적을 연결하지 않음 |
-| 짐벌 제어 | 미구현 | 저장된 각도를 사용하며 제어 명령을 만들지 않음 |
-| EKF/UKF | 미구현 | 관측 잡음 저감이나 폐색 구간 예측 없음 |
-| 지형·왜곡 보정 | 미구현 | 평면 지면과 이상적 핀홀 카메라 가정 |
+| 기체 3-2-1 회전 | 일치 | 논문 식 (1)의 $R_zR_yR_x$ 구현 |
+| 2축 짐벌 | 일치 | 논문 식 (2)의 $R_z(\nu)R_y(\lambda)$ 구현 |
+| 픽셀 광선 | 일치 | 식 (18)의 핀홀 관계를 임의 픽셀로 확장 |
+| 지면 교차 | 일치 | 논문 식 (11)~(14)와 대수적으로 동일 |
+| 위·경도 변환 | 타당 | WGS84 국소 곡률반경을 사용한 추가 변환 |
+| 사람 검출 | 부분 대응 | 논문의 Tiny-YOLO 대신 YOLO11n 사용 |
+| 추적·짐벌 제어 | 미구현 | CSRT 및 폐루프 제어 없음 |
+| EKF·UKF | 미구현 | 시간 필터와 폐색 예측 없음 |
+| 왜곡·지형 보정 | 미구현 | 이상적 핀홀과 평탄 지면 가정 |
 
-결론적으로 현재 코드는 논문의 **단일 영상 기하 위치측정 부분**을 2축 짐벌 조건에 맞게 구현했다. 그러나 논문이 제시한 추적·필터링 통합 시스템 전체를 재현한 것은 아니다. 실제 위치 정확도를 평가하려면 보정된 카메라 내부 파라미터, 렌즈 왜곡 계수, 카메라-짐벌 보어사이트, 센서 시간 동기, 지형 표고와 RTK 등 독립된 기준 좌표가 필요하다.
+수식과 `core.py`의 단일 프레임 위치계산은 일치한다. 실제 정확도 평가에는 카메라 캘리브레이션, 렌즈 왜곡, 카메라-짐벌 보어사이트, 센서별 축·부호, 시간 동기, AGL과 지형 표고의 실측값이 필요하다.
 
-## 11. 오차 요인과 정확도 검증 방법
+## 11. 정량 정확도 평가
 
-주요 오차원은 픽셀 접점 오차, 초점거리와 주점 오차, 자세 및 짐벌 각도 오차, AGL 오차, 평탄 지면 가정, 보어사이트 오차와 센서 시각 불일치이다. 특히 광선이 지면과 얕은 각도로 만날수록 \(d_D\)가 작아져 위치 오차가 크게 증폭된다.
+RTK 또는 측량 기준점 $(N_i^{ref},E_i^{ref})$이 있을 때 각 관측의 수평오차는
 
-정량 검증은 위치를 알고 있는 지상 기준점 또는 RTK로 측정한 사람 위치를 사용해야 한다. 각 관측에 대해
+$$
+e_i=\sqrt{(N_i-N_i^{ref})^2+(E_i-E_i^{ref})^2}.
+\tag{A7}
+$$
 
-\[
-e_i=\sqrt{(N_i-N_i^{ref})^2+(E_i-E_i^{ref})^2}
-\]
-
-를 계산하고 평균 오차, 중앙값, RMSE, 95백분위수와 최대 오차를 보고한다. 거리, 짐벌 하향각, 영상 영역, 비행 고도별로 오차를 나누어 제시하면 모델의 적용 범위를 판단할 수 있다.
+평균, 중앙값, RMSE, 95백분위수와 최대값을 보고하고 비행 고도, 표적 거리, 짐벌 하향각, 영상 위치별로 나누어 평가한다. $d_D$가 작아지는 저각 촬영에서는 각도·픽셀 오차가 크게 증폭된다.
 
 ## 참고문헌
 
