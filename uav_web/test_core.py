@@ -18,6 +18,10 @@ class CoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):project(s,[1920,1080],DEFAULT_CAMERA)
         self.state['gimbal_pitch']=20
         with self.assertRaises(ValueError):project(self.state,[1920,1080],DEFAULT_CAMERA)
+    def test_two_axis_gimbal_does_not_require_roll(self):
+        self.state.pop('gimbal_roll')
+        p=project(self.state,[1920,1080],DEFAULT_CAMERA)
+        self.assertAlmostEqual(p['north_m'],0)
     def test_safe_zip_and_hash(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as td:
             p=Path(td);buf=io.BytesIO();Image.new('RGB',(32,24)).save(buf,format='JPEG');raw=buf.getvalue();camera=dict(DEFAULT_CAMERA,width=32,height=24)

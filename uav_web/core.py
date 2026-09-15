@@ -10,8 +10,14 @@ def rotation(a, axis):
     c, s = math.cos(a), math.sin(a)
     return np.array([[[1,0,0],[0,c,-s],[0,s,c]], [[c,0,s],[0,1,0],[-s,0,c]], [[c,-s,0],[s,c,0],[0,0,1]]][axis])
 
-def project(state, pixel, camera, alternative=False):
-    keys = ['latitude','longitude','altitude_agl','roll','pitch','yaw','gimbal_roll','gimbal_pitch','gimbal_yaw']
+def project(state, pixel, camera):
+    """Project an image pixel onto a locally flat ground plane.
+
+    Body angles are 3-2-1 Euler angles in radians.  The two-axis gimbal has
+    yaw and pitch only; its angles are supplied in degrees by the KARI data.
+    Camera and navigation axes are both treated as forward/right/down (FRD/NED).
+    """
+    keys = ['latitude','longitude','altitude_agl','roll','pitch','yaw','gimbal_pitch','gimbal_yaw']
     if any(not isinstance(state.get(k), (int,float)) or not math.isfinite(state[k]) for k in keys):
         raise ValueError('GPS·AGL·기체 자세·짐벌 각도 중 누락/비정상 값이 있습니다.')
     if not -90 < state['latitude'] < 90 or not -180 <= state['longitude'] <= 180:
@@ -20,9 +26,8 @@ def project(state, pixel, camera, alternative=False):
     if state.get('gimbal_zoom') not in (None, 1, 1.0):
         raise ValueError('줌 1 이외의 프레임은 해당 줌의 카메라 보정값이 필요합니다.')
     r,p,y = [state[k] for k in ('roll','pitch','yaw')]
-    gr,gp,gy = [math.radians(state['gimbal_'+k]) for k in ('roll','pitch','yaw')]
+    gp,gy = [math.radians(state['gimbal_'+k]) for k in ('pitch','yaw')]
     R = rotation(y,2) @ rotation(p,1) @ rotation(r,0) @ rotation(gy,2) @ rotation(gp,1)
-    if alternative: R = rotation(y+gy,2) @ rotation(gr,0) @ rotation(gp,1)
     u,v=pixel; d=R @ np.array([1,(u-camera['cx'])/camera['fx'],(v-camera['cy'])/camera['fy']])
     if d[2] <= 1e-6: raise ValueError('선택한 광선이 전방 지면과 교차하지 않습니다.')
     n,e,h=d*state['altitude_agl']/d[2]
@@ -33,13 +38,7 @@ def project(state, pixel, camera, alternative=False):
 def locate(frame, person, camera):
     person.pop('estimate',None);person.pop('alternative',None);person.pop('error',None);person.pop('model_shift_m',None)
     try:
-        p=project(frame['state'],person['pixel_4k'],camera)
-        person['estimate']=p
-        try:
-            q=project(frame['state'],person['pixel_4k'],camera,True)
-            person['alternative']=q
-            person['model_shift_m']=math.hypot(p['north_m']-q['north_m'],p['east_m']-q['east_m'])
-        except ValueError: pass
+        person['estimate']=project(frame['state'],person['pixel_4k'],camera)
     except ValueError as e: person['error']=str(e)
     return person
 
@@ -88,4 +87,4 @@ def import_zip(path, out, camera):
         return frames
 
 def geojson(job):
-    return dict(type='FeatureCollection',features=[dict(type='Feature',geometry=dict(type='Point',coordinates=[p['estimate']['lon'],p['estimate']['lat']]),properties=dict(image=f['index'],id=p['id'],time=f['time'],source=p['source'],reviewed=f['reviewed'],ground_proxy=p.get('ground_proxy',False),model_shift_m=p.get('model_shift_m'))) for f in job['frames'] for p in f['people'] if 'estimate' in p])
+    return dict(type='FeatureCollection',features=[dict(type='Feature',geometry=dict(type='Point',coordinates=[p['estimate']['lon'],p['estimate']['lat']]),properties=dict(image=f['index'],id=p['id'],time=f['time'],source=p['source'],reviewed=f['reviewed'],ground_proxy=p.get('ground_proxy',False))) for f in job['frames'] for p in f['people'] if 'estimate' in p])
