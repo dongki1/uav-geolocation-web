@@ -89,4 +89,3 @@ def import_zip(path, out, camera):
 
 def geojson(job):
     return dict(type='FeatureCollection',features=[dict(type='Feature',geometry=dict(type='Point',coordinates=[p['estimate']['lon'],p['estimate']['lat']]),properties=dict(image=f['index'],id=p['id'],time=f['time'],source=p['source'],reviewed=f['reviewed'],ground_proxy=p.get('ground_proxy',False),model_shift_m=p.get('model_shift_m'))) for f in job['frames'] for p in f['people'] if 'estimate' in p])
-

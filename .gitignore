@@ -7,4 +7,3 @@ analysis/
 uav_web/tmp*/
 .env
 .env.*
-

@@ -9,4 +9,3 @@ if not p.exists():
     p.with_suffix('.part').replace(p)
 if hashlib.sha256(p.read_bytes()).hexdigest()!=EXPECTED:raise RuntimeError('모델 SHA-256 검증 실패')
 print('Model SHA256 verified:',EXPECTED)
-

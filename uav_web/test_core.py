@@ -37,4 +37,3 @@ class CoreTests(unittest.TestCase):
                 self.assertAlmostEqual(q['lat'],p['estimate']['lat'],places=10);self.assertAlmostEqual(q['lon'],p['estimate']['lon'],places=10)
 
 if __name__=='__main__':unittest.main()
-

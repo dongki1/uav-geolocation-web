@@ -34,4 +34,3 @@ rows.forEach(p=>{for(const alt of ($('alternative').checked&&p.alternative?[true
 $('zoomIn').onclick=()=>{zoom=Math.min(21,zoom+1);drawMap()};$('zoomOut').onclick=()=>{zoom=Math.max(12,zoom-1);drawMap()};$('fit').onclick=fit;new ResizeObserver(()=>{if(job)drawMap()}).observe($('map'));
 if(SNAPSHOT){job=SNAPSHOT;$('uploadPanel').classList.add('hidden');document.querySelectorAll('.edit').forEach(e=>e.classList.add('hidden'));$('download').classList.add('hidden');$('geojson').href='people.geojson';render()}else jobs().catch(e=>$('uploadStatus').textContent=e.message);
 </script></html>
-

@@ -29,4 +29,3 @@ class Detector:
         for box,score in sorted(boxes,key=lambda item:-item[1]):
             if all(iou(box,prev[0])<.45 for prev in kept):kept.append((box,score))
         return [dict(pixel_4k=[(b[0]+b[2])/2,b[3]],bbox=b,confidence=c,source='automatic',ground_proxy=False) for b,c in kept]
-

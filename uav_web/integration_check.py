@@ -33,4 +33,3 @@ with zipfile.ZipFile(io.BytesIO(raw)) as z:
         p=out/name;p.parent.mkdir(exist_ok=True);p.write_bytes(z.read(name))
 j=post(endpoint,dict(frame=1,people=[],reviewed=True));assert not j['frames'][0]['people']
 print('PASS: upload, import, add, move, reproject, review, export, delete; job',ident)
-

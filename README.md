@@ -56,4 +56,3 @@
 
 자동 검출 API: https://docs.ultralytics.com/modes/predict/
 Ultralytics 배포/상용 사용은 해당 AGPL-3.0 및 Enterprise 라이선스 조건을 확인하세요.
-

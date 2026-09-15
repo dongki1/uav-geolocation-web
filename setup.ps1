@@ -15,4 +15,3 @@ if ($LASTEXITCODE -ne 0) { throw '패키지 설치 실패' }
 & ./.venv/Scripts/python.exe uav_web/download_model.py
 if ($LASTEXITCODE -ne 0) { throw '모델 다운로드 실패' }
 Write-Host '설치 완료. start.ps1을 실행하세요.'
-
