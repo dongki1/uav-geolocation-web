@@ -1,5 +1,25 @@
 # UAV ZIP 사람 분포 웹 분석
 
+## 쏘티 정찰 범위 분석 (추가 기능)
+
+원본 MP4와 비행 메타데이터로 관측 면적·품질 부족·미관측 격자를 계산하고 다음 쏘티의 촬영 후보 좌표를 만듭니다. Python + NumPy + Pillow, PATH의 FFmpeg/FFprobe가 필요합니다. 기존 사람 검출 웹 서버와 별도로 실행합니다.
+
+```powershell
+python -m pip install -r reconnaissance/requirements.txt
+python -m reconnaissance.analyze '쏘티 폴더 절대경로' --output analysis/coverage
+# 정찰 경계가 있을 때 (WGS84 GeoJSON):
+python -m reconnaissance.analyze '쏘티 폴더 절대경로' --output analysis/coverage_aoi --aoi mission.geojson --gsd 0.10 --cell 5
+python -m unittest reconnaissance.test_analyze -v
+```
+
+이 PC에서는 `./run-reconnaissance.ps1 -Source '쏘티 폴더 절대경로' -Output '결과 폴더'`로 설치된 Python을 찾아 실행할 수도 있습니다. `-Aoi '경계.geojson' -Gsd 0.05 -Cell 2.5`처럼 기준을 변경할 수 있습니다.
+
+결과의 `report.html`을 열면 격자별 수치, 대표 영상, 우선순위별 촬영 후보를 볼 수 있습니다. `coverage.csv`, `coverage.geojson`, `next_views.geojson`을 다른 GIS/분석 도구에 사용할 수 있습니다. 재실행 시 동일 영상·간격의 추출 프레임을 재사용합니다. 원본 쏘티 밖에 출력 폴더를 지정하세요.
+
+보고서는 실제 위성지도 위에 관측 격자를 겹쳐 표시합니다. 기본으로 추가 관측 필요 영역만 보이며, 겹침 농도·확대·이동·촬영 후보의 위치 보기를 지원합니다. 위성 배경은 인터넷 연결이 필요하고 Esri에 해당 지역의 타일 좌표가 전송됩니다. 위성지도를 끄면 배경 없이 분석 결과를 확인할 수 있습니다.
+
+기본값은 2초 표본, 5 m 격자, GSD 10 cm/pixel 이하, 시간 간격 관측 2회, 다음 촬영 AGL 50 m입니다. AOI 미지정 시 임시 관측 경계 내부만 평가합니다. 평탄 지면·공칭 카메라에 의한 추정으로 **전체 임무 완료율이나 식별 성공률이 아닙니다**. 촬영 후보는 실행 가능한 비행경로가 아닙니다. [논문 근거·수학·한계](docs/RECONNAISSANCE_METHOD.md)를 확인하세요.
+
 브라우저에서 ZIP을 넣으면 모든 사진을 검토하고 사람 픽셀과 잠정 지리좌표를 관리합니다. 원본 ZIP은 서버 PC에서 처리하며 외부 AI 서비스로 업로드하지 않습니다. 로컬 단일 사용자용 서버입니다.
 
 ## 실행
